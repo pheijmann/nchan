@@ -8,7 +8,7 @@
 #endif
 #include <ngx_sha1.h>
 #include <nginx.h>
-#include "websocket.h"
+
 
 #if (NGX_ZLIB)
 #include <zlib.h>
@@ -184,10 +184,8 @@ struct full_subscriber_s {
   subscriber_t            sub;
   ngx_http_cleanup_t     *cln;
   nchan_request_ctx_t    *ctx;
-  subscriber_callback_pt  enqueue_callback;
-  void                   *enqueue_callback_data;
-  subscriber_callback_pt  dequeue_callback;
-  void                   *dequeue_callback_data;
+  subscriber_callback_pt  dequeue_handler;
+  void                   *dequeue_handler_data;
   ngx_event_t             timeout_ev;
   ngx_event_t             closing_ev;
   ws_frame_t              frame;
@@ -260,13 +258,13 @@ ngx_int_t ws_release_tmp_pool(full_subscriber_t *fsub) {
 }
 */
 
-static ngx_pool_t *ws_get_msgpool(full_subscriber_t *fsub) {
+ngx_pool_t *ws_get_msgpool(full_subscriber_t *fsub) {
   if(!fsub->publisher.msg_pool) {
     fsub->publisher.msg_pool = ngx_create_pool(NCHAN_WS_TMP_POOL_SIZE, fsub->sub.request->connection->log);
   }
   return fsub->publisher.msg_pool;
 }
-static ngx_int_t ws_destroy_msgpool(full_subscriber_t *fsub) {
+ngx_int_t ws_destroy_msgpool(full_subscriber_t *fsub) {
   if(fsub->publisher.msg_pool) {
     ngx_destroy_pool(fsub->publisher.msg_pool);
     fsub->publisher.msg_pool = NULL;
@@ -573,7 +571,7 @@ static ngx_int_t websocket_heartbeat(full_subscriber_t *fsub, ngx_buf_t *buf) {
   }
 }
 
-static ngx_int_t websocket_publish_upstream_handler(ngx_int_t rc, ngx_http_request_t *sr, void *pd) {
+ngx_int_t websocket_publish_upstream_handler(ngx_int_t rc, ngx_http_request_t *sr, void *pd) {
   ws_publish_data_t       *d = pd;
   full_subscriber_t       *fsub = d->fsub;
   
@@ -673,10 +671,10 @@ static ngx_int_t websocket_publish(full_subscriber_t *fsub, ngx_buf_t *buf, int 
   //move the msg pool
   d->pool = fsub->publisher.msg_pool;
   d->msgbuf = buf;
+  d->subrequest = NULL;
   fsub->publisher.msg_pool = NULL;
   
   if(fsub->publisher.intercept || fsub->publisher.upstream_request_url == NULL) { // don't need to send request upstream
-    d->subrequest = NULL;
     websocket_publish_continue(d);
   }
   else {
@@ -745,11 +743,8 @@ subscriber_t *websocket_subscriber_create(ngx_http_request_t *r, nchan_msg_id_t 
   
   ngx_memzero(&fsub->deflate, sizeof(fsub->deflate));
   
-  fsub->enqueue_callback = empty_handler;
-  fsub->enqueue_callback_data = NULL;
-  
-  fsub->dequeue_callback = empty_handler;
-  fsub->dequeue_callback_data = NULL;
+  fsub->dequeue_handler = empty_handler;
+  fsub->dequeue_handler_data = NULL;
   fsub->awaiting_destruction = 0;
   
   ngx_memzero(&fsub->closing_ev, sizeof(fsub->closing_ev));
@@ -1091,7 +1086,10 @@ static ngx_int_t websocket_perform_handshake(full_subscriber_t *fsub) {
 
 static void websocket_reading(ngx_http_request_t *r);
 
-static ngx_buf_t *websocket_inflate_message(full_subscriber_t *fsub, ngx_buf_t *msgbuf, ngx_pool_t *pool) {
+static ngx_buf_t *websocket_inflate_message(full_subscriber_t *fsub, ngx_buf_t *msgbuf, ngx_pool_t *pool, uint64_t max, int *result) {
+
+*result = 0;
+
 #if (NGX_ZLIB)
   z_stream      *strm;
   int            rc;
@@ -1120,7 +1118,7 @@ static ngx_buf_t *websocket_inflate_message(full_subscriber_t *fsub, ngx_buf_t *
   
   strm = fsub->deflate.zstream_in;
   
-  outbuf = nchan_inflate(strm, msgbuf, fsub->sub.request, pool);
+  outbuf = nchan_inflate(strm, msgbuf, fsub->sub.request, pool, max, result);
   return outbuf;
 #else
   return NULL;
@@ -1196,10 +1194,6 @@ static ngx_int_t websocket_enqueue(subscriber_t *self) {
   }
   self->enqueued = 1;
   
-  if(fsub->enqueue_callback) {
-    fsub->enqueue_callback(&fsub->sub, fsub->enqueue_callback_data);
-  }
-  
   if(self->cf->websocket_ping_interval > 0) {
     //add timeout timer
     //nextsub->ev should be zeroed;
@@ -1232,9 +1226,7 @@ static void websocket_delete_timers(full_subscriber_t *fsub) {
 static ngx_int_t websocket_dequeue(subscriber_t *self) {
   full_subscriber_t  *fsub = (full_subscriber_t  *)self;
   DBG("%p dequeue", self);
-  if(fsub->dequeue_callback) {
-    fsub->dequeue_callback(&fsub->sub, fsub->dequeue_callback_data);
-  }
+  fsub->dequeue_handler(&fsub->sub, fsub->dequeue_handler_data);
   
   self->enqueued = 0;
   
@@ -1250,17 +1242,10 @@ static ngx_int_t websocket_dequeue(subscriber_t *self) {
   return NGX_OK;
 }
 
-static ngx_int_t websocket_set_enqueue_callback(subscriber_t *self, subscriber_callback_pt cb, void *privdata) {
-  full_subscriber_t  *fsub = (full_subscriber_t  *)self;
-  fsub->enqueue_callback = cb;
-  fsub->enqueue_callback_data = privdata;
-  return NGX_OK;
-}
-
 static ngx_int_t websocket_set_dequeue_callback(subscriber_t *self, subscriber_callback_pt cb, void *privdata) {
   full_subscriber_t  *fsub = (full_subscriber_t  *)self;
-  fsub->dequeue_callback = cb;
-  fsub->dequeue_callback_data = privdata;
+  fsub->dequeue_handler = cb;
+  fsub->dequeue_handler_data = privdata;
   return NGX_OK;
 }
 
@@ -1322,6 +1307,8 @@ static void websocket_reading(ngx_http_request_t *r) {
   ngx_connection_t           *c;
   ngx_buf_t                  *msgbuf, buf;
   //ngx_str_t                 msg_in_str;
+  ngx_http_core_loc_conf_t   *clcf;
+  int                         result;
 retry:
   ctx = ngx_http_get_module_ctx(r, ngx_nchan_module);
   fsub = (full_subscriber_t *)ctx->sub;
@@ -1486,8 +1473,15 @@ retry:
               return websocket_reading_finalize(r);
             }
             
-            //TODO: check max websocket message length
+            clcf = ngx_http_get_module_loc_conf(ctx->sub->request, ngx_http_core_module);
+
             if(frame->payload == NULL) {
+              if(clcf->client_max_body_size && (uint64_t)clcf->client_max_body_size < frame->payload_len) {
+                websocket_send_close_frame_cstr(fsub, CLOSE_POLICY_VIOLATION, "Message too large.");
+                ws_destroy_msgpool(fsub);
+                fsub->publisher.msg_pool = NULL;
+                return websocket_reading_finalize(r);
+              }
               if(ws_get_msgpool(fsub) == NULL) {
                 ERR("failed to get msgpool");
                 websocket_send_close_frame(fsub, CLOSE_INTERNAL_SERVER_ERROR, NULL);
@@ -1504,6 +1498,13 @@ retry:
             }
             
             set_buffer(&buf, frame->payload, frame->last, frame->payload_len);
+			      if(clcf->client_max_body_size && clcf->client_max_body_size < ngx_buf_size(&buf)) {
+              websocket_send_close_frame_cstr(fsub, CLOSE_POLICY_VIOLATION, "Message too large.");
+              ws_destroy_msgpool(fsub);
+              fsub->publisher.msg_pool = NULL;
+              return websocket_reading_finalize(r);
+            }            
+
             
             if (frame->payload_len > 0 && (rc = ws_recv(c, rev, &buf, frame->payload_len)) != NGX_OK) {
               DBG("ws_recv NOT OK when receiving payload, but that's ok");
@@ -1531,7 +1532,12 @@ retry:
             
             //inflate message if needed
             if(fsub->deflate.enabled && frame->rsv1) {
-              if((msgbuf = websocket_inflate_message(fsub, msgbuf, ws_get_msgpool(fsub))) == NULL) {
+              if((msgbuf = websocket_inflate_message(fsub, msgbuf, ws_get_msgpool(fsub), (uint64_t)clcf->client_max_body_size, &result)) == NULL) {
+                if(result == -1) {
+                  websocket_send_close_frame_cstr(fsub, CLOSE_POLICY_VIOLATION, "Message too large.");
+                  ws_destroy_msgpool(fsub);
+                  return websocket_reading_finalize(r);
+                }
                 websocket_send_close_frame_cstr(fsub, CLOSE_INVALID_PAYLOAD, "Invalid permessage-deflate data");
                 ws_destroy_msgpool(fsub);
                 return websocket_reading_finalize(r);
@@ -1595,7 +1601,7 @@ exit:
 
 static ngx_flag_t is_utf8(ngx_buf_t *buf) {
   
-  u_char *p;
+  u_char *p, *op;
   size_t n;
   
   u_char  c, *last;
@@ -1617,6 +1623,7 @@ static ngx_flag_t is_utf8(ngx_buf_t *buf) {
   }
   
   last = p + n;
+  op = p;
   
   for (len = 0; p < last; len++) {
     c = *p;
@@ -1629,13 +1636,13 @@ static ngx_flag_t is_utf8(ngx_buf_t *buf) {
     if (ngx_utf8_decode(&p, last - p) > 0x10ffff) {
       /* invalid UTF-8 */
       if(mmapped) {
-        munmap(p, n);
+        munmap(op, n);
       }
       return 0;
     }
   }
   if(mmapped) {
-    munmap(p, n);
+    munmap(op, n);
   }
   return 1;
 }
@@ -2036,11 +2043,10 @@ static const subscriber_fn_t websocket_fn = {
   &websocket_dequeue,
   &websocket_respond_message,
   &websocket_respond_status,
-  &websocket_set_enqueue_callback,
   &websocket_set_dequeue_callback,
   &websocket_reserve,
   &websocket_release,
-  &nchan_subscriber_receive_notice,
+  &nchan_subscriber_empty_notify,
   &nchan_subscriber_authorize_subscribe_request
 };
 

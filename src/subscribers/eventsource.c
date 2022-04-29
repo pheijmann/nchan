@@ -3,7 +3,6 @@
 #include <util/nchan_bufchainpool.h>
 #include "longpoll.h"
 #include "longpoll-private.h"
-#include "eventsource.h"
 
 //#define DEBUG_LEVEL NGX_LOG_WARN
 #define DEBUG_LEVEL NGX_LOG_DEBUG

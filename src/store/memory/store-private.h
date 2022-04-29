@@ -5,7 +5,6 @@
 //#define MEMSTORE_CHANHEAD_RESERVE_DEBUG 1
 
 #define NCHAN_NOTICE_BUFFER_LOADED 0x356F
-#define NCHAN_NOTICE_CHANNEL_SUBSCRIBER_INFO_REQUEST 0x1337
 
 #if MEMSTORE_CHANHEAD_RESERVE_DEBUG
 #include <util/nchan_list.h>
@@ -123,7 +122,6 @@ typedef struct {
   ngx_atomic_int_t                   current_active_workers;
   ngx_atomic_int_t                   reloading;
   ngx_atomic_uint_t                  generation;
-  ngx_atomic_uint_t                  subscriber_info_response_id;
   
   nchan_loc_conf_shared_data_t      *conf_data;
   
