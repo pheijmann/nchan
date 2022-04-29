@@ -29,15 +29,18 @@ Gem::Specification.new do |spec|
   spec.add_dependency "celluloid"
   spec.add_dependency "celluloid-io"
   spec.add_dependency "HDRHistogram"
+  spec.add_dependency "redis", "~>4.2.0"
+  spec.add_dependency "async"
+  spec.add_dependency "async-redis"
   
   spec.add_dependency "websocket-driver"
   spec.add_dependency 'websocket-extensions'
   spec.add_dependency "permessage_deflate"
   spec.add_dependency 'http_parser.rb'
-if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new('2.2.2')
-  spec.add_dependency 'http-2'
-end  
+  if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new('2.2.2')
+    spec.add_dependency 'http-2'
+  end  
   spec.add_development_dependency "pry"
-  spec.add_development_dependency "bundler", "~> 1.16"
-  spec.add_development_dependency "rake", "~> 10.0"
+  spec.add_development_dependency "bundler"
+  spec.add_development_dependency "rake"
 end

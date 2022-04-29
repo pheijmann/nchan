@@ -6,18 +6,18 @@ gem 'oga'
 
 gem 'irb'
 gem 'pry'
-gem 'pry-byebug' if Gem::Version.new(RUBY_VERSION) >= Gem::Version.new('2.2.0')
+gem 'pry-byebug'
 gem 'pry-coolline'
 gem 'pry-doc'
 gem 'pry-git'
 gem 'pry-inline'
 gem 'pry-rescue'
-gem 'pry-stack_explorer'
-gem 'pry-state'
+#gem 'pry-stack_explorer'
+#gem 'pry-state'
 gem 'pry-syntax-hacks'
 gem 'pry-theme'
 
-gem 'celluloid'
+gem 'celluloid', "~>0.17.4"
 if Gem::Version.new(RUBY_VERSION) < Gem::Version.new('2.2.2')
   gem 'nio4r', '~>1.2.1'
 end
@@ -41,4 +41,4 @@ gem 'minitest-reporters'
 
 gem 'fpm', :git => "https://github.com/slact/fpm.git"
 
-gem 'hsss', "~> 0.1.20"
+gem 'hsss', "~> 0.1.23"

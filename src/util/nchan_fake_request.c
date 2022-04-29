@@ -47,7 +47,11 @@ static ngx_connection_t *nchan_create_fake_connection(ngx_pool_t *pool) {
   if(c->log->data == NULL) {
     goto failed;
   }
-
+  c->read->log = log;
+  c->write->log = log;
+#if nginx_version >= 1019009
+  c->read->active = 1;
+#endif  
   c->log_error = NGX_ERROR_INFO;
 
   c->error = 0;
@@ -184,7 +188,7 @@ static ngx_int_t nchan_initialize_fake_request(ngx_http_request_t *r, ngx_connec
   return NGX_OK;
 }
 */
-void empty_handler(ngx_http_request_t *r) {
+static void empty_handler(ngx_http_request_t *r) {
   //do nothing
 }
 
@@ -374,14 +378,6 @@ static void fakerequest_cleanup_timer_handler(ngx_event_t *ev) {
   nchan_finalize_fake_request(d->r, NGX_OK);
 }
 
-//see https://github.com/slact/nchan/pull/591
-typedef struct {
-  void *fsub;
-  ngx_pool_t        *pool;
-  ngx_buf_t         *msgbuf;
-  nchan_fakereq_subrequest_data_t *subrequest;
-} ws_publish_data_stub_t;
-
 nchan_fakereq_subrequest_data_t *nchan_requestmachine_request(nchan_requestmachine_t *rm, nchan_requestmachine_request_params_t *params) {
   nchan_fakereq_subrequest_data_t *d;
   ngx_pool_t *pool = params->pool;
@@ -476,7 +472,7 @@ nchan_fakereq_subrequest_data_t *nchan_requestmachine_request(nchan_requestmachi
     fakebody_buf->last_buf = 1;
     fakebody_buf->last_in_chain = 1;
     fakebody_buf->flush = 1;
-    //fakebody_buf->memory = 1;		//why were file-cached requests (over 16KB) disabled?
+    fakebody_buf->memory = 1;
     
     nchan_adjust_subrequest(sr, NGX_HTTP_POST, &POST_REQUEST_STRING, sr_body, sz);
   }
@@ -490,11 +486,6 @@ nchan_fakereq_subrequest_data_t *nchan_requestmachine_request(nchan_requestmachi
   
   nchan_slist_append(&rm->request_queue, d);
   
-  //see https://github.com/slact/nchan/pull/591
-  ws_publish_data_stub_t *pd;
-  pd = (ws_publish_data_stub_t*)(params->pd);
-  if(pd) pd->subrequest = d;
-
   nchan_requestmachine_run(rm);
   return d;
 }

@@ -114,6 +114,63 @@ ngx_int_t ngx_http_complex_value_noalloc(ngx_http_request_t *r, ngx_http_complex
   return NGX_OK;
 }
 
+ngx_int_t ngx_http_complex_value_alloc(ngx_http_request_t *r, ngx_http_complex_value_t *val, ngx_str_t *value, size_t maxlen) {
+  size_t                        len;
+  ngx_http_script_code_pt       code;
+  ngx_http_script_len_code_pt   lcode;
+  ngx_http_script_engine_t      e;
+
+  if (val->lengths == NULL) {
+    *value = val->value;
+    return NGX_OK;
+  }
+
+  ngx_http_script_flush_complex_value(r, val);
+
+  ngx_memzero(&e, sizeof(ngx_http_script_engine_t));
+
+  e.ip = val->lengths;
+  e.request = r;
+  e.flushed = 1;
+
+  len = 0;
+
+  while (*(uintptr_t *) e.ip) {
+    lcode = *(ngx_http_script_len_code_pt *) e.ip;
+    len += lcode(&e);
+  }
+  
+  if(len > maxlen) {
+    return NGX_ERROR;
+  }
+  
+  if((value->data = ngx_alloc(len, r->connection->log)) == NULL) {
+    return NGX_ERROR;
+  }
+  
+  value->len = len;
+
+  e.ip = val->values;
+  e.pos = value->data;
+  e.buf = *value;
+
+  while (*(uintptr_t *) e.ip) {
+    code = *(ngx_http_script_code_pt *) e.ip;
+    code((ngx_http_script_engine_t *) &e);
+  }
+
+  *value = e.buf;
+
+  return NGX_OK;
+}
+
+ngx_int_t ngx_http_complex_value_free(ngx_str_t *value) {
+  ngx_free(value->data);
+  value->data = NULL;
+  value->len = 0;
+  return NGX_OK;
+}
+
 ngx_int_t ngx_http_complex_value_custom_pool(ngx_http_request_t *r, ngx_http_complex_value_t *val, ngx_str_t *value, ngx_pool_t *pool) {
   size_t                        len;
   ngx_http_script_code_pt       code;
@@ -481,7 +538,7 @@ typedef struct {
   void          (*cb)(void *pd);
 } oneshot_timer_t;
 
-void oneshot_timer_callback(ngx_event_t *ev) {
+static void oneshot_timer_callback(ngx_event_t *ev) {
   oneshot_timer_t  *timer = container_of(ev, oneshot_timer_t, ev);
   timer->cb(ev->data);
   ngx_free(timer);
@@ -510,7 +567,7 @@ typedef struct {
   ngx_int_t    (*cb)(void *pd);
 } interval_timer_t;
 
-void interval_timer_callback(ngx_event_t *ev) {
+static void interval_timer_callback(ngx_event_t *ev) {
   interval_timer_t  *timer = container_of(ev, interval_timer_t, ev);
   ngx_int_t rc = timer->cb(ev->data);
   if((rc == NGX_OK || rc == NGX_AGAIN) && ev->timedout) {
@@ -964,7 +1021,7 @@ ngx_buf_t *nchan_common_deflate(ngx_buf_t *in, ngx_http_request_t *r, ngx_pool_t
   return out;
 }
 
-ngx_buf_t *nchan_inflate(z_stream *stream, ngx_buf_t *in, ngx_http_request_t *r, ngx_pool_t *pool, uint64_t max, int *result) {
+ngx_buf_t *nchan_inflate(z_stream *stream, ngx_buf_t *in, ngx_http_request_t *r, ngx_pool_t *pool) {
   ngx_str_t           mm_instr = {0, NULL};
   int                 mmapped = 0;
   ngx_temp_file_t    *tf = NULL;
@@ -975,8 +1032,6 @@ ngx_buf_t *nchan_inflate(z_stream *stream, ngx_buf_t *in, ngx_http_request_t *r,
   unsigned            have = 0;
   off_t               written = 0;
   int                 trailer_appended = 0;
-    
-  *result = 0;
   
   //input
   if(ngx_buf_in_memory(in)) {
@@ -1020,7 +1075,6 @@ ngx_buf_t *nchan_inflate(z_stream *stream, ngx_buf_t *in, ngx_http_request_t *r,
     }
 
     have = ZLIB_CHUNK - stream->avail_out;
-    if((uint64_t)have + written > max) break;
     
     if(stream->avail_out == 0 && tf == NULL) {
       //if we filled up the buffer, let's start dumping to a file.
@@ -1036,11 +1090,6 @@ ngx_buf_t *nchan_inflate(z_stream *stream, ngx_buf_t *in, ngx_http_request_t *r,
     munmap(mm_instr.data, mm_instr.len);
   }
   
-  if((uint64_t)have + written > max) {
-    *result = -1;
-    deflateReset(deflate_zstream);
-    return NULL;
-  }
   if((out = ngx_palloc(pool, sizeof(*out))) == NULL) {
     nchan_log_request_error(r, "failed to allocate output buf for deflated message");
     deflateReset(deflate_zstream);
